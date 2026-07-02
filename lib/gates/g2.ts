@@ -19,7 +19,9 @@ import { loadPageImage, type LoadedImage } from "../image";
 import { getStorage } from "../storage";
 import type { Project } from "../schema";
 
-const ERASE_KINDS = new Set(["speech", "thought", "narration"]);
+// scream(叫び声)もキャラが発する言葉＝吹き出しの原文字を消してreveal(G4)で復元する対象。
+// sfx(擬音の書き文字)だけは元々吹き出しではなく絵に直接描かれているので消去対象に含めない。
+const ERASE_KINDS = new Set(["speech", "thought", "narration", "scream"]);
 
 export async function gateG2(
   project: Project
