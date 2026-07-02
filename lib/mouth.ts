@@ -13,7 +13,8 @@ import { loadPageImage, type LoadedImage } from "./image";
 import { getStorage } from "./storage";
 import type { Project } from "./schema";
 
-const SPEAK = new Set(["speech", "thought", "narration"]);
+// scream(叫び声)もキャラ本人が発する言葉＝口パク対象。sfx(擬音の書き文字)だけ対象外。
+const SPEAK = new Set(["speech", "thought", "narration", "scream"]);
 const hasJa = (t: string) => /[ぁ-んァ-ヶ一-龥a-zA-Z0-9]/.test(t || "");
 const speakLines = (s: Project["shots"][number]) =>
   s.bubbles.filter((b) => SPEAK.has(b.kind) && hasJa(b.text));

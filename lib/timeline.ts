@@ -7,7 +7,9 @@ import type { Project } from "./schema";
 
 export const FPS = 30;
 const GAP = 0.35; // セリフ間の小休止(秒)
-const REVEAL_KINDS = new Set(["speech", "thought", "narration"]);
+// scream(叫び声)もキャラが発する言葉＝文字の出現アニメーション＆音声クリップをタイムラインに乗せる対象。
+// これが漏れると、scream吹き出しは音声が生成されていてもタイムラインに一切現れず「喋らない」ことになる。
+const REVEAL_KINDS = new Set(["speech", "thought", "narration", "scream"]);
 
 export type Reveal = {
   bubbleIndex: number;
