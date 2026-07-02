@@ -84,9 +84,20 @@ export default function ReviewClient({
   const [sizes, setSizes] = useState<Record<string, { w: number; h: number }>>({});
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  // 「①自動で作成する」の今の工程（進捗表示用）。busy==="auto"の間だけ意味を持つ。
+  const [autoStep, setAutoStep] = useState<string | null>(null);
   const [showOverlay, setShowOverlay] = useState(true);
   const [editBoxes, setEditBoxes] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false); // G0〜G4の個別操作は普段隠す（非エンジニア向け）
+  // 左の画像のコマ枠 ⇔ 右のコマ編集カードの連動。どちらかをクリックすると両方が一瞬光る。
+  const [highlightShotId, setHighlightShotId] = useState<string | null>(null);
+  const highlightTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  function focusShot(sid: string) {
+    setHighlightShotId(sid);
+    document.getElementById(`shot-card-${sid}`)?.scrollIntoView({ behavior: "auto", block: "center" });
+    if (highlightTimer.current) clearTimeout(highlightTimer.current);
+    highlightTimer.current = setTimeout(() => setHighlightShotId((cur) => (cur === sid ? null : cur)), 1600);
+  }
   const dragRef = useRef<{
     kind: "move" | "resize";
     sid: string;
@@ -380,6 +391,21 @@ export default function ReviewClient({
       return { ...p, voice_cast: vc };
     });
   }
+  // AIが人物を取りこぼした/1人に統合してしまった時の受け皿。新しい話者IDを発行して
+  // 既定の声を割り当てる。戻り値のIDをそのまま吹き出しのspeaker選択に使える。
+  function addCast(): string {
+    let n = 1;
+    while (project.voice_cast[`speaker_${n}`]) n++;
+    const sid = `speaker_${n}`;
+    setProject((p) => ({
+      ...p,
+      voice_cast: {
+        ...p.voice_cast,
+        [sid]: { voice_id: "f_calm", speed: 1.0, pitch: 0, tone: "normal", age: "standard" },
+      },
+    }));
+    return sid;
+  }
   const saveCast = () => call("/review", { voice_cast: project.voice_cast }, "savecast");
 
   // 編集を動画に一括反映：保存 → 音声生成(G3) → 書き出し(G4)
@@ -419,11 +445,15 @@ export default function ReviewClient({
   // G0〜G3をまとめて自動実行（承認は機械的な追認なので人の手を挟まない）。
   // 完了後、人はここで初めて「チェックと編集」（青枠の位置・話者/声・演出）に集中できる。
   // G4(書き出し)だけは編集後に「▶編集を動画に反映」で明示的に行う。
+  // G0〜G3を自動連続実行。既に完了している工程はスキップするので、途中失敗・リロード後に
+  // 再度押しても「続きから」再開する（＝押せる操作が常に1つある状態を保つ）。
   async function runAutoPipeline() {
     setBusy("auto");
     setErr(null);
+    let latest = project; // setProjectは次のレンダーまで反映されないので、ローカルに最新状態を持つ
     try {
-      const post = async (path: string, body?: unknown) => {
+      const post = async (path: string, body: unknown, label: string) => {
+        setAutoStep(label);
         const res = await fetch(`/api/projects/${id}${path}`, {
           method: "POST",
           headers: body ? { "content-type": "application/json" } : undefined,
@@ -432,21 +462,36 @@ export default function ReviewClient({
         const json = await res.json();
         if (!res.ok || json.ok === false) throw new Error(json.error || "失敗");
         if (json.project) {
+          latest = json.project;
           setProject(json.project);
           setRestored(false);
         }
       };
-      await post("/g0"); // コマ検出・OCR
-      await post("/g1"); // コンテ生成（グレード・カメラ・演出）
-      await post("/review", { approve: true }); // レビューゲート承認
-      await post("/g2"); // 文字消し
-      await post("/g3"); // 話者割当・音声・効果音
+      if (latest.pipeline.G0.state !== "done")
+        await post("/g0", undefined, "1/5 コマを検出・OCR中…");
+      if (latest.pipeline.G1.state !== "done")
+        await post("/g1", undefined, "2/5 演出コンテを設計中…");
+      if (!latest.pipeline.G1.approved)
+        await post("/review", { approve: true }, "3/5 承認処理中…");
+      if (latest.pipeline.G2.state !== "done")
+        await post("/g2", undefined, "4/5 文字を消去中…");
+      if (latest.pipeline.G3.state !== "done")
+        await post("/g3", undefined, "5/5 声・音声を生成中…");
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
       setBusy(null);
+      setAutoStep(null);
     }
   }
+  // G0〜G3がまだ揃っていない（初回未実行・途中失敗・リロード等）かどうか。
+  // trueの間は主要操作に常に「①自動で作成する/続きを作成する」を出し、詰みを防ぐ。
+  const autoPipelineIncomplete =
+    project.pipeline.G0.state !== "done" ||
+    project.pipeline.G1.state !== "done" ||
+    !project.pipeline.G1.approved ||
+    project.pipeline.G2.state !== "done" ||
+    project.pipeline.G3.state !== "done";
 
   return (
     <div style={{ marginTop: 12 }}>
@@ -551,26 +596,35 @@ export default function ReviewClient({
 
       {/* === 主要操作（普段はこれだけ） === */}
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center", marginBottom: 10 }}>
-        {!hasShots ? (
-          <button onClick={runAutoPipeline} disabled={!!busy} style={primaryBtn(!!busy)}>
-            {busy === "auto"
-              ? "自動生成中…（解析→演出→文字消し→音声・1〜3分）"
-              : "① 自動で作成する（解析・演出・文字消し・音声）"}
-          </button>
+        {autoPipelineIncomplete ? (
+          <>
+            <button onClick={runAutoPipeline} disabled={!!busy} style={primaryBtn(!!busy)}>
+              {busy === "auto"
+                ? autoStep || "自動生成中…"
+                : hasShots
+                ? "① 続きを自動で作成する"
+                : "① 自動で作成する（解析・演出・文字消し・音声）"}
+            </button>
+            {hasShots && busy !== "auto" && (
+              <span style={{ fontSize: 12, color: "var(--muted)" }}>
+                前回はここで止まっています。押すと続きから再開します（最初からやり直しません）。
+              </span>
+            )}
+          </>
         ) : (
           <>
             <button
               onClick={applyAndRender}
-              disabled={!!busy || !g1.approved}
-              style={{ ...primaryBtn(!!busy || !g1.approved), padding: "11px 18px" }}
+              disabled={!!busy}
+              style={{ ...primaryBtn(!!busy), padding: "11px 18px" }}
               title="編集（画角・背景・額装・登場・話者・文字・口パク等）を保存して動画を書き出します。"
             >
               {busy === "apply" ? "反映中…（文字消し→音声→書き出し 1〜2分）" : "▶ 編集を動画に反映"}
             </button>
             <button
               onClick={() => call("/mouth", {}, "mouth")}
-              disabled={!!busy || !g1.approved}
-              style={btn(!!busy || !g1.approved)}
+              disabled={!!busy}
+              style={btn(!!busy)}
               title="口が見える話者コマに「閉じ／半開き／開き」の口素材を生成し、音量に合わせて口パクさせます（生成後に「▶編集を動画に反映」で動画化）。"
             >
               {busy === "mouth" ? "口パク生成中…(1コマ1〜2分)" : "👄 口パクを生成"}
@@ -762,8 +816,7 @@ export default function ReviewClient({
         )}
       </section>
 
-      {Object.keys(project.voice_cast).length > 0 && (
-        <section
+      <section
           style={{
             marginBottom: 16,
             background: "var(--panel-2)",
@@ -786,6 +839,14 @@ export default function ReviewClient({
               声の配役（話者ごとに 声・感情・速さ を選ぶ）
             </h2>
             <div style={{ display: "flex", gap: 8 }}>
+              <button
+                onClick={addCast}
+                disabled={!!busy}
+                style={{ ...btn(!!busy), fontSize: 12, padding: "5px 10px" }}
+                title="AIが人物を見落とした/1人に混同した時に、新しい話者を手動で追加できます"
+              >
+                ＋ 話者を追加
+              </button>
               <button onClick={saveCast} disabled={!!busy} style={btn()}>
                 {busy === "savecast" ? "保存中…" : "配役を保存"}
               </button>
@@ -798,6 +859,11 @@ export default function ReviewClient({
               </button>
             </div>
           </div>
+          {Object.keys(project.voice_cast).length === 0 && (
+            <p style={{ fontSize: 12, color: "var(--muted)", margin: "0 0 10px" }}>
+              話者はまだいません。「① 自動で作成する」を実行するとAIが自動で登場人物ごとに声を割り当てます。人物の見落としに気づいたら、上の「＋ 話者を追加」で手動で足せます。
+            </p>
+          )}
           <div style={{ display: "grid", gap: 8 }}>
             <div
               style={{
@@ -902,7 +968,6 @@ export default function ReviewClient({
             ))}
           </div>
         </section>
-      )}
 
       {project.outputs.demo_mp4 && (
         <section style={{ marginBottom: 18 }}>
@@ -1011,11 +1076,23 @@ export default function ReviewClient({
                         {pageShots.map((s) => {
                           const gi = project.shots.indexOf(s); // 章通しのコマ番号
                           const [x, y, w, h] = s.bbox;
-                          const c = (s.grade && GRADE_COLOR[s.grade]) || "#6b7280";
+                          const hl = highlightShotId === s.id;
+                          const c = hl ? "#ffd666" : (s.grade && GRADE_COLOR[s.grade]) || "#6b7280";
                           return (
                             <g key={s.id}>
-                              <rect x={x} y={y} width={w} height={h} fill="none" stroke={c} strokeWidth={2} vectorEffect="non-scaling-stroke" />
-                              <text x={x + 6} y={y + 26} fill={c} fontSize={Math.max(18, sz.w / 45)}>
+                              <rect
+                                x={x}
+                                y={y}
+                                width={w}
+                                height={h}
+                                fill={hl ? "rgba(255,214,102,0.14)" : "none"}
+                                stroke={c}
+                                strokeWidth={hl ? 4 : 2}
+                                vectorEffect="non-scaling-stroke"
+                                style={{ cursor: "pointer", pointerEvents: "all" }}
+                                onClick={() => focusShot(s.id)}
+                              />
+                              <text x={x + 6} y={y + 26} fill={c} fontSize={Math.max(18, sz.w / 45)} style={{ pointerEvents: "none" }}>
                                 {gi + 1}
                               </text>
                               {s.bubbles.map((b, j) =>
@@ -1031,11 +1108,22 @@ export default function ReviewClient({
                                       strokeWidth={editBoxes ? 2 : 1.5}
                                       strokeDasharray={editBoxes ? undefined : "4 3"}
                                       vectorEffect="non-scaling-stroke"
-                                      style={{ cursor: editBoxes ? "move" : "default", pointerEvents: editBoxes ? "all" : "none" }}
-                                      onPointerDown={(e) =>
-                                        startDrag(e, "move", s.id, j, b.bbox as [number, number, number, number], sz)
-                                      }
+                                      style={{ cursor: editBoxes ? "move" : "pointer", pointerEvents: "all" }}
+                                      onPointerDown={(e) => {
+                                        if (editBoxes) startDrag(e, "move", s.id, j, b.bbox as [number, number, number, number], sz);
+                                      }}
+                                      onClick={() => !editBoxes && focusShot(s.id)}
                                     />
+                                    {/* 吹き出し番号(B1,B2…)。右側の吹き出し行と同じ番号で1対1対応させる */}
+                                    <text
+                                      x={b.bbox[0] + 3}
+                                      y={b.bbox[1] + Math.min(16, b.bbox[3])}
+                                      fill="#6ea8fe"
+                                      fontSize={Math.max(12, sz.w / 70)}
+                                      style={{ pointerEvents: "none", fontWeight: 700 }}
+                                    >
+                                      B{j + 1}
+                                    </text>
                                     {editBoxes && (
                                       <rect
                                         x={b.bbox[0] + b.bbox[2] - 18}
@@ -1068,20 +1156,28 @@ export default function ReviewClient({
         <div style={{ display: "grid", gap: 12 }}>
           {!hasShots && (
             <div style={{ color: "var(--muted)" }}>
-              「① G0 実行」を押すと、コマと吹き出しを検出してここに表示します。
+              「① 自動で作成する」を押すと、コマ検出から演出・文字消し・音声まで自動で作成し、ここに表示します（1〜3分）。
             </div>
           )}
           {project.shots.map((s, i) => (
             <div
               key={s.id}
+              id={`shot-card-${s.id}`}
               style={{
                 background: "var(--panel-2)",
-                border: "1px solid var(--border)",
+                border: highlightShotId === s.id ? "1px solid #ffd666" : "1px solid var(--border)",
+                boxShadow: highlightShotId === s.id ? "0 0 0 3px rgba(255,214,102,0.25)" : undefined,
                 borderRadius: 8,
                 padding: 14,
+                transition: "box-shadow 0.2s, border-color 0.2s",
+                scrollMarginTop: 16,
               }}
             >
-              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+              <div
+                style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, cursor: "pointer", width: "fit-content" }}
+                onClick={() => focusShot(s.id)}
+                title="このコマの左の画像枠を光らせます"
+              >
                 <span
                   style={{
                     background: (s.grade && GRADE_COLOR[s.grade]) || "#6b7280",
@@ -1256,8 +1352,12 @@ export default function ReviewClient({
                     return (
                       <div key={j} style={{ display: "grid", gap: 4 }}>
                         <div
-                          style={{ display: "grid", gridTemplateColumns: "110px 1fr auto", gap: 8 }}
+                          style={{ display: "grid", gridTemplateColumns: "24px 110px 1fr auto", gap: 8, alignItems: "center" }}
                         >
+                          {/* 左の画像の青枠と同じ番号（B1,B2…）。どの枠がこの行かを1対1で照合できる */}
+                          <span style={{ fontSize: 11, color: "#6ea8fe", fontWeight: 700 }}>
+                            B{j + 1}
+                          </span>
                           <select
                             value={b.kind}
                             onChange={(e) =>
@@ -1300,7 +1400,14 @@ export default function ReviewClient({
                             <span style={{ fontSize: 12 }}>🔊</span>
                             <select
                               value={b.speaker ?? ""}
-                              onChange={(e) => patchBubble(s.id, j, { speaker: e.target.value })}
+                              onChange={(e) => {
+                                if (e.target.value === "__add_new__") {
+                                  const sid = addCast();
+                                  patchBubble(s.id, j, { speaker: sid });
+                                  return;
+                                }
+                                patchBubble(s.id, j, { speaker: e.target.value });
+                              }}
                               style={{ ...input, width: "auto", fontSize: 11, padding: "3px 6px" }}
                               title="話者"
                             >
@@ -1315,6 +1422,7 @@ export default function ReviewClient({
                                   {sid}
                                 </option>
                               ))}
+                              <option value="__add_new__">＋ 新しい話者を追加…</option>
                             </select>
                             <select
                               value={b.emotion || "neutral"}
