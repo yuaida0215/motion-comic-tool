@@ -12,3 +12,10 @@ next-env.d.ts
 /storage
 /.assets
 .env*
+
+# リポジトリ直下に置いた検証用のマンガ画像を誤ってコミットしないためのガード
+# （test-page.webpが公開リポジトリに混入した事故の再発防止。素材はstorage/配下に置く）
+/*.png
+/*.jpg
+/*.jpeg
+/*.webp
