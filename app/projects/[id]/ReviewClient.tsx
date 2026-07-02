@@ -413,35 +413,75 @@ export default function ReviewClient({
     }));
     return sid;
   }
-  const saveCast = () => call("/review", { voice_cast: project.voice_cast }, "savecast");
+  // 複数のPOSTを順に実行する共通ヘルパー。各ステップの結果でproject stateを更新するので、
+  // 次のステップは常に最新状態（直前の保存内容）を見て動く。
+  async function postSeq(steps: Array<[path: string, body?: unknown]>) {
+    for (const [path, body] of steps) {
+      const res = await fetch(`/api/projects/${id}${path}`, {
+        method: "POST",
+        headers: body ? { "content-type": "application/json" } : undefined,
+        body: body ? JSON.stringify(body) : undefined,
+      });
+      const json = await res.json();
+      if (!res.ok || json.ok === false) throw new Error(json.error || "失敗");
+      if (json.project) {
+        setProject(json.project);
+        setRestored(false);
+      }
+    }
+  }
 
-  // 編集を動画に一括反映：保存 → 音声生成(G3) → 書き出し(G4)
+  // 「配役を保存」：画面上の編集（セリフ・カード・配役）を丸ごと保存する。
+  // voice_castだけでなくshots/cardsも一緒に送らないと、セリフの直し忘れが起きるため。
+  const saveCast = async () => {
+    setBusy("savecast");
+    setErr(null);
+    try {
+      await postSeq([["/review", { shots: buildEdits(), cards: project.cards, voice_cast: project.voice_cast }]]);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // 「この声で再生成（G3）」：動画は作り直さず音声だけ素早く聴きたい時用。
+  // こちらも先に画面上の編集（セリフ含む）を保存してからG3を実行する
+  // （保存せずにG3だけ叩くと、直したセリフではなく古い保存済みセリフで音声が作られてしまうため）。
+  async function regenerateVoice() {
+    setBusy("g3");
+    setErr(null);
+    try {
+      await postSeq([
+        ["/review", { shots: buildEdits(), cards: project.cards, voice_cast: project.voice_cast }],
+        ["/g3"],
+      ]);
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  // 編集を動画に一括反映：保存 → 文字消し(G2) → 音声生成(G3) → 書き出し(G4)
   async function applyAndRender() {
     setBusy("apply");
     setErr(null);
     try {
-      const post = async (path: string, body?: unknown) => {
-        const res = await fetch(`/api/projects/${id}${path}`, {
-          method: "POST",
-          headers: body ? { "content-type": "application/json" } : undefined,
-          body: body ? JSON.stringify(body) : undefined,
-        });
-        const json = await res.json();
-        if (!res.ok || json.ok === false) throw new Error(json.error || "失敗");
-        if (json.project) {
-          setProject(json.project);
-          setRestored(false);
-        }
-      };
-      await post("/review", {
-        shots: buildEdits(),
-        cards: project.cards,
-        voice_cast: project.voice_cast,
-        delivery: project.meta.delivery,
-      });
-      await post("/g2"); // 青枠(吹き出し枠)の編集を文字消しに反映
-      await post("/g3"); // 話者・感情・文字(カタカナ等)を音声に反映
-      await post("/g4"); // 動画を書き出し
+      await postSeq([
+        [
+          "/review",
+          {
+            shots: buildEdits(),
+            cards: project.cards,
+            voice_cast: project.voice_cast,
+            delivery: project.meta.delivery,
+          },
+        ],
+        ["/g2"], // 青枠(吹き出し枠)の編集を文字消しに反映
+        ["/g3"], // 話者・感情・文字(カタカナ等)を音声に反映
+        ["/g4"], // 動画を書き出し
+      ]);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
@@ -854,13 +894,14 @@ export default function ReviewClient({
               >
                 ＋ 話者を追加
               </button>
-              <button onClick={saveCast} disabled={!!busy} style={btn()}>
+              <button onClick={saveCast} disabled={!!busy} style={btn()} title="今の編集（セリフ・カード・配役）を保存します（音声は作り直しません）">
                 {busy === "savecast" ? "保存中…" : "配役を保存"}
               </button>
               <button
-                onClick={() => call("/g3", undefined, "g3")}
+                onClick={regenerateVoice}
                 disabled={!!busy}
                 style={primaryBtn(!!busy)}
+                title="今の編集を保存してから、この配役で音声だけ作り直します（動画は作り直しません）"
               >
                 {busy === "g3" ? "音声生成中…" : "この声で再生成（G3）"}
               </button>
