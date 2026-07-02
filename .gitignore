@@ -1,0 +1,14 @@
+/node_modules
+/.next
+/out
+.env
+.env.local
+*.tsbuildinfo
+next-env.d.ts
+.DS_Store
+.vercel
+
+# プロジェクト/生成物の置き場（ローカル開発用ストレージ）
+/storage
+/.assets
+.env*
