@@ -88,6 +88,7 @@ export default function ReviewClient({
   const [autoStep, setAutoStep] = useState<string | null>(null);
   const [showOverlay, setShowOverlay] = useState(true);
   const [editBoxes, setEditBoxes] = useState(false);
+  const [editPanelBoxes, setEditPanelBoxes] = useState(false); // コマ枠(shot.bbox)自体のドラッグ編集
   const [showAdvanced, setShowAdvanced] = useState(false); // G0〜G4の個別操作は普段隠す（非エンジニア向け）
   // 左の画像のコマ枠 ⇔ 右のコマ編集カードの連動。どちらかをクリックすると両方が一瞬光る。
   const [highlightShotId, setHighlightShotId] = useState<string | null>(null);
@@ -99,9 +100,10 @@ export default function ReviewClient({
     highlightTimer.current = setTimeout(() => setHighlightShotId((cur) => (cur === sid ? null : cur)), 1600);
   }
   const dragRef = useRef<{
+    target: "bubble" | "panel";
     kind: "move" | "resize";
     sid: string;
-    bidx: number;
+    bidx: number; // target==="panel"の時は使わない
     cx: number;
     cy: number;
     orig: [number, number, number, number];
@@ -298,18 +300,22 @@ export default function ReviewClient({
   function startDrag(
     e: React.PointerEvent,
     kind: "move" | "resize",
+    target: "bubble" | "panel",
     sid: string,
     bidx: number,
     bbox: [number, number, number, number],
     pageSize: { w: number; h: number }
   ) {
-    if (!editBoxes || !pageSize) return;
+    if (target === "bubble" && !editBoxes) return;
+    if (target === "panel" && !editPanelBoxes) return;
+    if (!pageSize) return;
     const svg = (e.currentTarget as SVGElement).ownerSVGElement;
     if (!svg) return;
     e.preventDefault();
     e.stopPropagation();
     const r = svg.getBoundingClientRect();
     dragRef.current = {
+      target,
       kind,
       sid,
       bidx,
@@ -342,7 +348,8 @@ export default function ReviewClient({
       Math.round(w),
       Math.round(h),
     ];
-    patchBubble(d.sid, d.bidx, { bbox: nb });
+    if (d.target === "panel") patchShot(d.sid, { bbox: nb });
+    else patchBubble(d.sid, d.bidx, { bbox: nb });
   }
   function endDrag() {
     dragRef.current = null;
@@ -1020,9 +1027,25 @@ export default function ReviewClient({
             <input
               type="checkbox"
               checked={editBoxes}
-              onChange={(e) => setEditBoxes(e.target.checked)}
+              onChange={(e) => {
+                setEditBoxes(e.target.checked);
+                if (e.target.checked) setEditPanelBoxes(false);
+              }}
             />
-            吹き出し枠を編集（青枠をドラッグで移動／右下の角でリサイズ → 「修正を保存」→「G2再実行」）
+            吹き出し枠を編集（青枠をドラッグで移動／右下の角でリサイズ → 「▶編集を動画に反映」）
+          </label>
+          <label
+            style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 8, fontSize: 13 }}
+          >
+            <input
+              type="checkbox"
+              checked={editPanelBoxes}
+              onChange={(e) => {
+                setEditPanelBoxes(e.target.checked);
+                if (e.target.checked) setEditBoxes(false);
+              }}
+            />
+            コマ枠を編集（AIの検出がズレている時に、コマの外枠自体をドラッグで移動／右下の角でリサイズ → 「▶編集を動画に反映」）
           </label>
           {(() => {
             // 多ページ：pages があればページ別に画像＋オーバーレイ。無ければ単一ページ(従来)。
@@ -1057,7 +1080,7 @@ export default function ReviewClient({
                         setSizes((s) => ({ ...s, [page.id]: { w, h } }));
                       }}
                     />
-                    {(showOverlay || editBoxes) && sz && (
+                    {(showOverlay || editBoxes || editPanelBoxes) && sz && (
                       <svg
                         viewBox={`0 0 ${sz.w} ${sz.h}`}
                         preserveAspectRatio="none"
@@ -1069,8 +1092,8 @@ export default function ReviewClient({
                           inset: 0,
                           width: "100%",
                           height: "100%",
-                          pointerEvents: editBoxes ? "auto" : "none",
-                          touchAction: editBoxes ? "none" : "auto",
+                          pointerEvents: editBoxes || editPanelBoxes ? "auto" : "none",
+                          touchAction: editBoxes || editPanelBoxes ? "none" : "auto",
                         }}
                       >
                         {pageShots.map((s) => {
@@ -1085,16 +1108,32 @@ export default function ReviewClient({
                                 y={y}
                                 width={w}
                                 height={h}
-                                fill={hl ? "rgba(255,214,102,0.14)" : "none"}
+                                fill={hl ? "rgba(255,214,102,0.14)" : editPanelBoxes ? "rgba(224,182,90,0.08)" : "none"}
                                 stroke={c}
                                 strokeWidth={hl ? 4 : 2}
                                 vectorEffect="non-scaling-stroke"
-                                style={{ cursor: "pointer", pointerEvents: "all" }}
-                                onClick={() => focusShot(s.id)}
+                                style={{ cursor: editPanelBoxes ? "move" : "pointer", pointerEvents: "all" }}
+                                onPointerDown={(e) => {
+                                  if (editPanelBoxes) startDrag(e, "move", "panel", s.id, -1, s.bbox as [number, number, number, number], sz);
+                                }}
+                                onClick={() => !editPanelBoxes && focusShot(s.id)}
                               />
                               <text x={x + 6} y={y + 26} fill={c} fontSize={Math.max(18, sz.w / 45)} style={{ pointerEvents: "none" }}>
                                 {gi + 1}
                               </text>
+                              {editPanelBoxes && (
+                                <rect
+                                  x={x + w - 22}
+                                  y={y + h - 22}
+                                  width={22}
+                                  height={22}
+                                  fill={c}
+                                  style={{ cursor: "nwse-resize", pointerEvents: "all" }}
+                                  onPointerDown={(e) =>
+                                    startDrag(e, "resize", "panel", s.id, -1, s.bbox as [number, number, number, number], sz)
+                                  }
+                                />
+                              )}
                               {s.bubbles.map((b, j) =>
                                 b.bbox ? (
                                   <g key={j}>
@@ -1108,11 +1147,11 @@ export default function ReviewClient({
                                       strokeWidth={editBoxes ? 2 : 1.5}
                                       strokeDasharray={editBoxes ? undefined : "4 3"}
                                       vectorEffect="non-scaling-stroke"
-                                      style={{ cursor: editBoxes ? "move" : "pointer", pointerEvents: "all" }}
+                                      style={{ cursor: editBoxes ? "move" : "pointer", pointerEvents: editPanelBoxes ? "none" : "all" }}
                                       onPointerDown={(e) => {
-                                        if (editBoxes) startDrag(e, "move", s.id, j, b.bbox as [number, number, number, number], sz);
+                                        if (editBoxes) startDrag(e, "move", "bubble", s.id, j, b.bbox as [number, number, number, number], sz);
                                       }}
-                                      onClick={() => !editBoxes && focusShot(s.id)}
+                                      onClick={() => !editBoxes && !editPanelBoxes && focusShot(s.id)}
                                     />
                                     {/* 吹き出し番号(B1,B2…)。右側の吹き出し行と同じ番号で1対1対応させる */}
                                     <text
@@ -1133,7 +1172,7 @@ export default function ReviewClient({
                                         fill="#6ea8fe"
                                         style={{ cursor: "nwse-resize", pointerEvents: "all" }}
                                         onPointerDown={(e) =>
-                                          startDrag(e, "resize", s.id, j, b.bbox as [number, number, number, number], sz)
+                                          startDrag(e, "resize", "bubble", s.id, j, b.bbox as [number, number, number, number], sz)
                                         }
                                       />
                                     )}
