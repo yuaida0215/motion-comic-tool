@@ -102,6 +102,7 @@ export async function POST(
     add_shot?: { page_id?: string; bbox?: number[] }; // 新しいコマを1つ追加（位置は追加後にドラッグで合わせる想定）
     delete_shot_id?: string; // 誤検出コマを1つ削除（吹き出し/音声/口パク素材ごと消える＝取り消し不可）
     resort_reading_order?: boolean; // 全ページのコマを現在のbboxから読み順に自動整列（手動追加/移動の後の並び直し用）
+    move_shot?: { id?: string; dir?: string }; // 読み順を1つ前(up)/後ろ(down)へ。幾何学の自動判定が正解と違う変則レイアウト用
   };
 
   const validBox = (b: unknown): b is [number, number, number, number] =>
@@ -155,6 +156,25 @@ export async function POST(
     for (const pid of pageIds) next = resortPage(next, pid);
     project.shots = next;
     await saveProject(project);
+  }
+
+  // 読み順の手動並べ替え：隣と入れ替えるだけ（同じページ内に限定＝ページまたぎの並びは崩さない）。
+  // 右列を縦に読み切ってから左へ移る等、bboxの幾何学だけでは正解が決まらない変則レイアウトの補正用。
+  // shot idは変えない（音声/画像アセットがidに紐づくため）。動画のコマ順は配列順で決まる。
+  if (body.move_shot && typeof body.move_shot.id === "string" && (body.move_shot.dir === "up" || body.move_shot.dir === "down")) {
+    const i = project.shots.findIndex((s) => s.id === body.move_shot!.id);
+    const j = body.move_shot.dir === "up" ? i - 1 : i + 1;
+    if (
+      i >= 0 &&
+      j >= 0 &&
+      j < project.shots.length &&
+      (project.shots[i].page_id || "") === (project.shots[j].page_id || "")
+    ) {
+      const tmp = project.shots[i];
+      project.shots[i] = project.shots[j];
+      project.shots[j] = tmp;
+      await saveProject(project);
+    }
   }
 
   if (Array.isArray(body.shots)) {

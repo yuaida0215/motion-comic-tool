@@ -283,6 +283,10 @@ export default function ReviewClient({
   async function resortPanels() {
     await call("/review", { resort_reading_order: true }, "resort");
   }
+  // 読み順を1つ前/後ろへ（自動整列が正解と違う変則レイアウトの手動補正。同じページ内でのみ動く）。
+  async function movePanel(sid: string, dir: "up" | "down") {
+    await call("/review", { move_shot: { id: sid, dir } }, "movepanel");
+  }
 
   function buildEdits() {
     return project.shots.map((s) => ({
@@ -1316,14 +1320,42 @@ export default function ReviewClient({
                   </span>
                   <strong>{s.id}</strong>
                 </div>
-                <button
-                  onClick={() => removePanel(s.id)}
-                  disabled={!!busy}
-                  style={{ ...btn(!!busy), fontSize: 12, padding: "3px 8px", color: "var(--muted)" }}
-                  title="このコマ自体を削除します（誤検出/重複したコマ用。中の吹き出し・音声・口パク素材も一緒に消えます）"
-                >
-                  ✕ コマを削除
-                </button>
+                <div style={{ display: "flex", gap: 4 }}>
+                  {(() => {
+                    const samePage = (a: number) =>
+                      a >= 0 && a < project.shots.length && (project.shots[a].page_id || "") === (s.page_id || "");
+                    const canUp = samePage(i - 1);
+                    const canDown = samePage(i + 1);
+                    return (
+                      <>
+                        <button
+                          onClick={() => movePanel(s.id, "up")}
+                          disabled={!!busy || !canUp}
+                          style={{ ...btn(!!busy || !canUp), fontSize: 12, padding: "3px 8px" }}
+                          title="読み順を1つ前へ（自動の順番判定が実際の読み順と違う時の手動補正）"
+                        >
+                          ▲ 前へ
+                        </button>
+                        <button
+                          onClick={() => movePanel(s.id, "down")}
+                          disabled={!!busy || !canDown}
+                          style={{ ...btn(!!busy || !canDown), fontSize: 12, padding: "3px 8px" }}
+                          title="読み順を1つ後ろへ（自動の順番判定が実際の読み順と違う時の手動補正）"
+                        >
+                          ▼ 後へ
+                        </button>
+                        <button
+                          onClick={() => removePanel(s.id)}
+                          disabled={!!busy}
+                          style={{ ...btn(!!busy), fontSize: 12, padding: "3px 8px", color: "var(--muted)" }}
+                          title="このコマ自体を削除します（誤検出/重複したコマ用。中の吹き出し・音声・口パク素材も一緒に消えます）"
+                        >
+                          ✕ コマを削除
+                        </button>
+                      </>
+                    );
+                  })()}
+                </div>
               </div>
 
               <input
