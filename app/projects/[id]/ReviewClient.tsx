@@ -261,6 +261,29 @@ export default function ReviewClient({
     }));
   }
 
+  // G0がコマ自体を検出しそこねた（コマ割りの誤り）時に、人がコマを追加できる。
+  // ページ中央に控えめなサイズで置く→「コマ枠を編集」でドラッグ/リサイズして本来の位置に合わせる想定。
+  async function addPanel(pageId: string) {
+    const sz = sizes[pageId] ?? sizes[""];
+    if (!sz) return;
+    const bw = Math.max(80, Math.round(sz.w * 0.28));
+    const bh = Math.max(80, Math.round(sz.h * 0.22));
+    const bbox = [Math.round((sz.w - bw) / 2), Math.round((sz.h - bh) / 2), bw, bh];
+    await call("/review", { add_shot: { page_id: pageId, bbox } }, "addpanel");
+    setEditPanelBoxes(true);
+    setEditBoxes(false);
+  }
+  // 誤検出（コマでない部分をコマと誤認識、絵の一部が別コマに重複検出等）を削除する。
+  // 吹き出し/音声/口パク素材ごと消える取り消し不可の操作なので確認を挟む。
+  async function removePanel(sid: string) {
+    if (!window.confirm(`${sid} を削除します。中の吹き出し・音声・口パク素材もすべて消えます。よろしいですか？`)) return;
+    await call("/review", { delete_shot_id: sid }, "delpanel");
+  }
+  // 手動で追加/移動したコマを含め、現在のbboxから読み順（右上→左、上→下）に自動整列し直す。
+  async function resortPanels() {
+    await call("/review", { resort_reading_order: true }, "resort");
+  }
+
   function buildEdits() {
     return project.shots.map((s) => ({
       id: s.id,
@@ -1088,6 +1111,16 @@ export default function ReviewClient({
             />
             コマ枠を編集（AIの検出がズレている時に、コマの外枠自体をドラッグで移動／右下の角でリサイズ → 「▶編集を動画に反映」）
           </label>
+          {editPanelBoxes && (
+            <button
+              onClick={resortPanels}
+              disabled={!!busy}
+              style={{ ...btn(!!busy), fontSize: 12, padding: "5px 10px", marginBottom: 8 }}
+              title="コマを追加/移動した後、今の位置から読み順（右上→左、上→下）に番号を自動で振り直します"
+            >
+              {busy === "resort" ? "整列中…" : "🔀 順番を自動整列"}
+            </button>
+          )}
           {(() => {
             // 多ページ：pages があればページ別に画像＋オーバーレイ。無ければ単一ページ(従来)。
             const pagesToShow =
@@ -1226,6 +1259,16 @@ export default function ReviewClient({
                       </svg>
                     )}
                   </div>
+                  {editPanelBoxes && (
+                    <button
+                      onClick={() => addPanel(page.id)}
+                      disabled={!!busy}
+                      style={{ ...btn(!!busy), fontSize: 12, padding: "5px 10px", marginTop: 6 }}
+                      title="G0が見落としたコマをこのページに追加します（中央に小さく置くので、追加後にドラッグ/リサイズで位置を合わせてください）"
+                    >
+                      {busy === "addpanel" ? "追加中…" : "＋ コマを追加"}
+                    </button>
+                  )}
                 </div>
               );
             });
@@ -1253,24 +1296,34 @@ export default function ReviewClient({
                 scrollMarginTop: 16,
               }}
             >
-              <div
-                style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, cursor: "pointer", width: "fit-content" }}
-                onClick={() => focusShot(s.id)}
-                title="このコマの左の画像枠を光らせます"
-              >
-                <span
-                  style={{
-                    background: (s.grade && GRADE_COLOR[s.grade]) || "#6b7280",
-                    color: "#0b0e14",
-                    fontWeight: 700,
-                    borderRadius: 4,
-                    padding: "1px 8px",
-                    fontSize: 13,
-                  }}
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+                <div
+                  style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer" }}
+                  onClick={() => focusShot(s.id)}
+                  title="このコマの左の画像枠を光らせます"
                 >
-                  {i + 1}
-                </span>
-                <strong>{s.id}</strong>
+                  <span
+                    style={{
+                      background: (s.grade && GRADE_COLOR[s.grade]) || "#6b7280",
+                      color: "#0b0e14",
+                      fontWeight: 700,
+                      borderRadius: 4,
+                      padding: "1px 8px",
+                      fontSize: 13,
+                    }}
+                  >
+                    {i + 1}
+                  </span>
+                  <strong>{s.id}</strong>
+                </div>
+                <button
+                  onClick={() => removePanel(s.id)}
+                  disabled={!!busy}
+                  style={{ ...btn(!!busy), fontSize: 12, padding: "3px 8px", color: "var(--muted)" }}
+                  title="このコマ自体を削除します（誤検出/重複したコマ用。中の吹き出し・音声・口パク素材も一緒に消えます）"
+                >
+                  ✕ コマを削除
+                </button>
               </div>
 
               <input
