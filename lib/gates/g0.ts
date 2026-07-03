@@ -32,11 +32,10 @@ const PANEL_SCHEMA: Record<string, unknown> = {
         type: "object",
         additionalProperties: false,
         properties: {
-          reading_order: { type: "number" },
           bbox: { type: "array", items: { type: "number" } },
           description: { type: "string" },
         },
-        required: ["reading_order", "bbox", "description"],
+        required: ["bbox", "description"],
       },
     },
   },
@@ -66,7 +65,7 @@ const BUBBLE_SCHEMA: Record<string, unknown> = {
 };
 
 type PanelResp = {
-  shots: Array<{ reading_order: number; bbox: number[]; description: string }>;
+  shots: Array<{ bbox: number[]; description: string }>;
 };
 type BubbleResp = {
   bubbles: Array<{
@@ -86,6 +85,54 @@ function clampBox(arr: number[] | undefined, W: number, H: number): BBox {
   return [cx, cy, cw, ch];
 }
 
+/** マンガの読み順（右上→左、上の段→下の段）でコマを並べ替える。
+ *  LLMに読み順を自己申告させると、斜めコマ等で「同じ段」の判断を誤り左右が逆転することがある
+ *  （実データで確認済み）。bboxは検出精度が高いので、そこから幾何学的に確定させる。
+ *  「段」= y範囲が大きく重なるコマ同士（Union-Findでクラスタ化）。段間は最小yの昇順、
+ *  段内は中心x座標の降順（右が先）。同じx帯なら上のコマを先に。 */
+function orderPanelsByReadingOrder<T extends { box: BBox }>(items: T[]): T[] {
+  const n = items.length;
+  const parent = Array.from({ length: n }, (_, i) => i);
+  const find = (x: number): number => (parent[x] === x ? x : (parent[x] = find(parent[x])));
+  const union = (a: number, b: number) => {
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) parent[ra] = rb;
+  };
+  for (let i = 0; i < n; i++) {
+    const [, yi, , hi] = items[i].box;
+    for (let j = i + 1; j < n; j++) {
+      const [, yj, , hj] = items[j].box;
+      const overlap = Math.min(yi + hi, yj + hj) - Math.max(yi, yj);
+      const minH = Math.min(hi, hj);
+      if (minH > 0 && overlap / minH > 0.3) union(i, j);
+    }
+  }
+  const groups = new Map<number, number[]>();
+  for (let i = 0; i < n; i++) {
+    const r = find(i);
+    const g = groups.get(r);
+    if (g) g.push(i);
+    else groups.set(r, [i]);
+  }
+  const rows = [...groups.values()].map((idxs) => ({
+    idxs,
+    minY: Math.min(...idxs.map((i) => items[i].box[1])),
+  }));
+  rows.sort((a, b) => a.minY - b.minY);
+  const order: number[] = [];
+  for (const row of rows) {
+    row.idxs.sort((a, b) => {
+      const cxA = items[a].box[0] + items[a].box[2] / 2;
+      const cxB = items[b].box[0] + items[b].box[2] / 2;
+      if (Math.abs(cxA - cxB) > 1) return cxB - cxA; // 右が先
+      return items[a].box[1] - items[b].box[1]; // 同じx帯なら上が先
+    });
+    order.push(...row.idxs);
+  }
+  return order.map((i) => items[i]);
+}
+
 /** 1枚のページ画像からコマ＋吹き出しを検出して shot[] を返す（多ページ対応の per-page 検出）。
  *  pageId はそのページのid（単一ページは ""）。idOffset で章通しの shot 番号を続ける。 */
 async function detectOnImage(
@@ -102,9 +149,8 @@ async function detectOnImage(
     system:
       "あなたはマンガのコマ割りを解析するエンジンです。指定スキーマに厳密に従います。",
     prompt: `この画像は日本のマンガ1ページ（完成原稿）です。実寸は 幅${W}px × 高さ${H}px。
-ページを「コマ(panel)」に分けて返してください。
+ページを「コマ(panel)」に分けて返してください（読み順の判定はコード側でbboxから自動計算するので不要）。
 - bbox は絶対ピクセル座標 [x, y, w, h]（左上原点）。0〜${W} / 0〜${H} に収める。
-- reading_order はマンガの読み順（右上→左、上の段→下の段）で1から。同じ段は右が先。
 - description はコマ内容の短い日本語説明。
 - **重要（コマ境界が斜め/曲線/コマ枠が無い場合）**: bbox は矩形（長方形）でしか表せないが、実際のコマ境界は斜めのことが多い。
   その場合は隣のコマにはみ出さないよう、**境界線の内側（そのコマの絵柄だけ）に収まる、できるだけタイトな矩形**にすること。
@@ -116,9 +162,9 @@ async function detectOnImage(
   });
   cost += panelRes.costUsd;
 
-  const panels = [...((panelRes.data as PanelResp).shots ?? [])]
-    .sort((a, b) => a.reading_order - b.reading_order)
-    .map((p) => ({ ...p, box: clampBox(p.bbox, W, H) }));
+  const panels = orderPanelsByReadingOrder(
+    ((panelRes.data as PanelResp).shots ?? []).map((p) => ({ ...p, box: clampBox(p.bbox, W, H) }))
+  );
 
   // ---- パス2: 各コマで吹き出し・OCR（並列） ----
   const perPanel = await Promise.all(
