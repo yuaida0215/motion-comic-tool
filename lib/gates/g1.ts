@@ -167,6 +167,8 @@ export async function gateG1(
     shot.grade = plan.grade;
     shot.beat = plan.beat;
     shot.duration_sec = Math.round(plan.duration_sec * 10) / 10;
+    // G1の尺は「自動の仮置き」なので手動判定をリセット→次のG3で必ずセリフ実尺にフィットさせる。
+    shot.duration_auto_sec = null;
     shot.camera = { type: plan.camera_type, params: { reason: plan.camera_reason } };
     // 演出B：背景テーマ（ページ既定と同じなら継承＝""）＋額装プリセット→数値展開。
     const bt = plan.background_theme && BACKGROUND_THEMES[plan.background_theme] ? plan.background_theme : "";

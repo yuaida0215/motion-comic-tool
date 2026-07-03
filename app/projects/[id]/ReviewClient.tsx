@@ -86,6 +86,8 @@ export default function ReviewClient({
   const [err, setErr] = useState<string | null>(null);
   // 「①自動で作成する」の今の工程（進捗表示用）。busy==="auto"の間だけ意味を持つ。
   const [autoStep, setAutoStep] = useState<string | null>(null);
+  // 「👄 口パクを生成」の今の工程（進捗表示用）。busy==="mouth"の間だけ意味を持つ。
+  const [mouthStep, setMouthStep] = useState<string | null>(null);
   const [showOverlay, setShowOverlay] = useState(true);
   const [editBoxes, setEditBoxes] = useState(false);
   const [editPanelBoxes, setEditPanelBoxes] = useState(false); // コマ枠(shot.bbox)自体のドラッグ編集
@@ -558,6 +560,67 @@ export default function ReviewClient({
       setAutoStep(null);
     }
   }
+  // 「👄 口パクを生成」：口検出＋各コマの開き口生成を分割実行する。
+  // 全コマ一括だと1コマ1〜2分×複数コマで本番のタイムアウト(maxDuration 300秒)を超えて
+  // 強制終了し、保存前に落ちて何も残らない事故があった。検出だけ先に保存 → コマ単位で1本ずつ
+  // POSTすることで、途中まででも毎回保存され、1コマ失敗しても他のコマは続行できるようにする。
+  async function generateMouths() {
+    setBusy("mouth");
+    setErr(null);
+    let latest = project; // setProjectは次のレンダーまで反映されないので、ローカルに最新状態を持つ
+    try {
+      setMouthStep("口の位置を検出中…");
+      const detRes = await fetch(`/api/projects/${id}/mouth`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ detect_only: true }),
+      });
+      const detJson = await detRes.json();
+      if (!detRes.ok || detJson.ok === false) throw new Error(detJson.error || "失敗");
+      if (detJson.project) {
+        latest = detJson.project;
+        setProject(detJson.project);
+        setRestored(false);
+      }
+
+      const targets = latest.shots.filter(
+        (s) => s.mouth && (s.mouth.facing === "front" || s.mouth.facing === "side") && !s.mouth.disabled
+      );
+      if (targets.length === 0) {
+        setErr("口が見える話者コマが見つかりませんでした（話者が画面外/後ろ向きのコマは対象外です）");
+        return;
+      }
+
+      const failed: string[] = [];
+      for (let k = 0; k < targets.length; k++) {
+        const sid = targets[k].id;
+        setMouthStep(`口パク生成中 ${k + 1}/${targets.length}（${sid}）…`);
+        const res = await fetch(`/api/projects/${id}/mouth`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ shot_id: sid }),
+        });
+        const json = await res.json();
+        if (!res.ok || json.ok === false) {
+          failed.push(`${sid}: ${json.error || "失敗"}`);
+          continue;
+        }
+        if (json.project) {
+          latest = json.project;
+          setProject(json.project);
+          setRestored(false);
+        }
+        if (Array.isArray(json.errors) && json.errors.length > 0) failed.push(...json.errors);
+      }
+      if (failed.length > 0) setErr("一部のコマで口パク生成に失敗: " + failed.join(" / "));
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(null);
+      setMouthStep(null);
+    }
+  }
+
   // G0〜G3がまだ揃っていない（初回未実行・途中失敗・リロード等）かどうか。
   // trueの間は主要操作に常に「①自動で作成する/続きを作成する」を出し、詰みを防ぐ。
   const autoPipelineIncomplete =
@@ -696,12 +759,12 @@ export default function ReviewClient({
               {busy === "apply" ? "反映中…（文字消し→音声→書き出し 1〜2分）" : "▶ 編集を動画に反映"}
             </button>
             <button
-              onClick={() => call("/mouth", {}, "mouth")}
+              onClick={generateMouths}
               disabled={!!busy}
               style={btn(!!busy)}
               title="口が見える話者コマに「閉じ／半開き／開き」の口素材を生成し、音量に合わせて口パクさせます（生成後に「▶編集を動画に反映」で動画化）。"
             >
-              {busy === "mouth" ? "口パク生成中…(1コマ1〜2分)" : "👄 口パクを生成"}
+              {busy === "mouth" ? (mouthStep || "口パク生成中…") : "👄 口パクを生成"}
             </button>
             <span style={{ fontSize: 12, color: "var(--muted)" }}>
               動画：{project.outputs.demo_mp4 ? "書き出し済み ✓" : "未書き出し"}　/　編集を変えたら「▶ 編集を動画に反映」を押す
@@ -1391,6 +1454,7 @@ export default function ReviewClient({
                   <input
                     type="number"
                     step="0.1"
+                    title="音声生成(G3)のたびにセリフ実尺＋間に自動調整されます。打ち替えると手動優先（空欄にして反映すると自動に戻ります）"
                     value={s.duration_sec ?? ""}
                     onChange={(e) =>
                       patchShot(s.id, {

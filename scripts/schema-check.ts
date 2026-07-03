@@ -37,6 +37,7 @@ p.shots.push({
   grade: "standard", // G1
   beat: "展開",
   duration_sec: 4.0,
+  duration_auto_sec: null, // G3
   camera: { type: "zoom_in", params: { scale: 1.2 } },
   framing: "auto", // G4
   background: { theme: "", override_colors: [] }, // 演出B

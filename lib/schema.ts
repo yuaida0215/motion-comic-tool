@@ -309,6 +309,10 @@ export const ShotSchema = z.object({
   /* ---- G3: 音声 ---- */
   voice: z.array(VoiceClipSchema).default([]),
 
+  /** G3が自動計算した尺（セリフ実尺＋間）。duration_sec がこれと一致している間は「自動」とみなし、
+   *  人が打ち替えて差があれば「手動」として G3 再実行でも上書きしない。 */
+  duration_auto_sec: z.number().nullable().default(null),
+
   /** 口パク用。region=差し替える顔領域。closed_img/half_img/open_img=その顔を「口閉じ/半開き/口開き」に
    *  AI再描画した3枚。喋り中は音量レベル(levels)に応じて 閉→半→開 を切り替える＝音の大小で口の開きが変わる。
    *  常にいずれかを表示するので四角い継ぎ目は出ない。half_img が無い場合は閉/開の2枚で動く。

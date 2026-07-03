@@ -226,12 +226,19 @@ ${slist}
     });
   }
 
-  // 尺の実尺補正（セリフ実尺の合計＋間）
+  // 尺の実尺補正（セリフ実尺の合計＋間）。上下両方向に合わせる＝G1の見積もりが長すぎた時の
+  // 「セリフ後の無音の間」も解消する。ただし人が尺を打ち替えていた（前回の自動値と差がある）場合は
+  // 演出意図とみなして触らない。空欄に戻す（null）と再び自動に戻る。
   for (const s of project.shots) {
     const total = s.voice.reduce((t, v) => t + v.dur, 0);
     if (total > 0) {
       const need = Math.round((total + 0.6 * s.voice.length + 0.4) * 10) / 10;
-      s.duration_sec = Math.max(s.duration_sec ?? 0, need);
+      const manual =
+        s.duration_auto_sec != null &&
+        s.duration_sec != null &&
+        Math.abs(s.duration_sec - s.duration_auto_sec) > 0.01;
+      if (!manual) s.duration_sec = need;
+      s.duration_auto_sec = need;
     }
   }
 
