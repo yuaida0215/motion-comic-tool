@@ -148,6 +148,25 @@ export async function eraseTextInBubbles(
   // ※白塗りは必ず flood（白に囲まれた内部＋穴=文字）だけ。四角く塗ると絵に白い穴が開く＝厳禁。
   const boxes: LocalBox[] = [];
 
+  // 「白」のしきい値を吹き出しごとに適応的に決める。
+  // 固定の WHITE_T(186) だけだと、明るいグレーの空/トーン(実測190〜226)まで「白」と誤判定され、
+  // 吹き出しの白とひと続きになって背景へ漏れ、空が探索範囲まるごと白塗りされる事故が起きた（実データで確認）。
+  // 吹き出し内部は紙の白(実測250前後)で背景グレーよりはっきり明るいので、文字枠内の白画素の中央値から
+  // 相対で下げた値をしきい値にする（背景も真っ白に近いページでは従来どおり WHITE_T が下限）。
+  const whiteThreshold = (bx0: number, by0: number, bx1: number, by1: number): number => {
+    const samples: number[] = [];
+    for (let y = by0; y < by1; y++) {
+      for (let x = bx0; x < bx1; x++) {
+        const g = gray[y * W + x];
+        if (g >= WHITE_T) samples.push(g);
+      }
+    }
+    if (samples.length < 50) return WHITE_T; // 白が少なすぎて実測できない→従来どおり
+    samples.sort((a, b) => a - b);
+    const median = samples[Math.floor(samples.length / 2)];
+    return Math.max(WHITE_T, Math.min(median - 22, 240));
+  };
+
   for (const b of bubbles) {
     // 探索ROIを広めに取る＝枠は文字ぎりぎり(タイト)のままでも、白い吹き出し内部をfloodして
     // 隣の列（多列セリフ）まで消せる。横（列方向）を特に広げる。
@@ -172,10 +191,11 @@ export async function eraseTextInBubbles(
     const sby0 = clamp(b.y, y0, y1);
     const sbx1 = clamp(b.x + b.w, x0, x1);
     const sby1 = clamp(b.y + b.h, y0, y1);
+    const T = whiteThreshold(sbx0, sby0, sbx1, sby1);
     const seedFrom = (ax0: number, ay0: number, ax1: number, ay1: number) => {
       for (let y = ay0; y < ay1; y++) {
         for (let x = ax0; x < ax1; x++) {
-          if (gray[y * W + x] >= WHITE_T && !interior[li(x, y)]) {
+          if (gray[y * W + x] >= T && !interior[li(x, y)]) {
             interior[li(x, y)] = 1;
             stack.push(y * W + x);
           }
@@ -198,7 +218,7 @@ export async function eraseTextInBubbles(
       ];
       for (const [nx, ny] of nb) {
         if (nx < x0 || nx >= x1 || ny < y0 || ny >= y1) continue;
-        if (!interior[li(nx, ny)] && gray[ny * W + nx] >= WHITE_T) {
+        if (!interior[li(nx, ny)] && gray[ny * W + nx] >= T) {
           interior[li(nx, ny)] = 1;
           stack.push(ny * W + nx);
         }
